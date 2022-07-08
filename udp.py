@@ -2,6 +2,8 @@ import socket
 import fcntl
 import array
 import struct
+import time
+from threading import Thread
 import argparse
 import sys
 
@@ -49,19 +51,18 @@ def create_client_with_nic(nic='', num=1, timeout=0):
                 break
     return clients
 
-def create_client_with_host(hosts, timeout=0):
+def create_client_with_host(host, port=0, timeout=0):
     clients = []
     if not host: # no ip address
         return clients
-    for x in hosts: # try to use all IP addresses
-        sk = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-        if timeout:
-            sk.settimeout(timeout)
-        sk.bind((host, 0))
-        clients.append(sk)
+    sk = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+    if timeout:
+        sk.settimeout(timeout)
+    sk.bind((host, port))
+    clients.append(sk)
     return clients
 
-def run_clients(clients, server, numPackets=1, msg="Hello Server"):
+def run_clients(clients, server, ports=[], numPackets=1, msg="Hello Server"):
     if not clients:
         return
     print("Send {} packets to server {}".format(numPackets, server))
@@ -70,10 +71,11 @@ def run_clients(clients, server, numPackets=1, msg="Hello Server"):
         cnt += 1
         for j, x in enumerate(clients, start=1):
             try:
-                print("{}. Client {} sends request to server {}:{}".format(cnt, j, server[0], server[1]))
-                x.sendto(str.encode("client {}-[{}] >>> {}".format(j, cnt, msg)), server)
-                reply = x.recvfrom(MSG_BUF_SIZE)
-                print("    <<< {}".format(reply[0]))
+                for port in ports:
+                    print("{}. Client {} sends request to server {}:{}".format(cnt, j, server, port))
+                    x.sendto(str.encode("client {}-[{}] >>> {}".format(j, cnt, msg)), (server, port))
+                    reply = x.recvfrom(MSG_BUF_SIZE)
+                    print("    <<< {}".format(reply[0]))
             except KeyboardInterrupt:
                 sys.exit(1)
             except Exception as e:
@@ -81,48 +83,66 @@ def run_clients(clients, server, numPackets=1, msg="Hello Server"):
     print("All clients stop!!!")
     return
 
-def create_server_with_nic(nic='', port=10000, timeout=0):
+def create_server_with_nic(nic='', ports=[], timeout=0):
     servers = []
     ips     = get_nic_ips(nic)
-    if not ips:
+    if not ips or not ports:
         return servers
     for x in ips: # try to use all IP addresses
-        sk = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-        if timeout:
-            sk.settimeout(timeout)
-        sk.bind((x, port))
-        servers.append(sk)
+        for y in ports:
+            sk = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+            if timeout:
+                sk.settimeout(timeout)
+            sk.bind((x, y))
+            servers.append(sk)
     return servers
 
-def create_server_with_host(host, port=10000, timeout=0):
+def create_server_with_host(host, ports=[], timeout=0):
     servers = []
-    if not host:
+    if not host or not ports:
         return servers
-    for x in host: # try to use all IP addresses
+    for x in ports: # try to use all IP addresses
         sk = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
         if timeout:
             sk.settimeout(timeout)
-        sk.bind((x, port))
+        sk.bind((host, x))
         servers.append(sk)
     return servers
 
-def run_servers(servers, msg="Hello Client"):
-    if not servers:
+def run_server(server, msg="Hello Client"):
+    if not server:
         return
-    print("Listening on {}".format(servers[0].getsockname()))
+    print("Listening on {}".format(server.getsockname()))
     while True:
         try:
-            req = servers[0].recvfrom(MSG_BUF_SIZE)
+            req = server.recvfrom(MSG_BUF_SIZE)
             clientMsg  = req[0]
             clientAddr = req[1]
             print("{}:{} {}".format(clientAddr[0], clientAddr[1], clientMsg))
-            servers[0].sendto(str.encode("@{}:{} , {}".format(clientAddr[0], clientAddr[1], msg)), clientAddr)
+            server.sendto(str.encode("@{}:{} , {}".format(clientAddr[0], clientAddr[1], msg)), clientAddr)
         except KeyboardInterrupt:
             break
         except:
             pass
     return
 
+def run_servers(servers, msg="Hello Client"):
+    if not servers:
+        return
+    threads = []
+    for x in servers:
+        x = Thread(target=run_server, args=(x, msg))
+        threads.append(x)
+        x.daemon = True
+        x.start()
+    try:
+        while True:
+            time.sleep(2)
+    except KeyboardInterrupt:
+        pass
+    print("All servers stop!!!")
+    sys.exit(0)
+    return
 
 def main():
     parser     = argparse.ArgumentParser(description='UDP traffic utility')
@@ -137,14 +157,15 @@ def main():
 
     # UDP Client Parameters
     clientArgs.add_argument('destHost',                         type=str, action='store', help='destination host')
-    clientArgs.add_argument('destPort',                         type=int, action='store', help='destination port')
-    clientArgs.add_argument('clientHost',                       type=str, action='store', nargs='*', help='Client host')
+    clientArgs.add_argument('destPorts',                        type=int, action='store', help='destination port', nargs='+')
     clientArgs.add_argument('--num-clients', dest='numClients', type=int, action='store', help='total number of clients', default=1)
     clientArgs.add_argument('--num-packets', dest='numPackets', type=int, action='store', help='total number of packets per client', default=1)
+    clientArgs.add_argument('--srcHost',     dest='srcHost',    type=str, action='store', help='Client source host')
+    clientArgs.add_argument('--srcPort',     dest='srcPort',    type=int, action='store', help='Client source port')
 
     # UDP Server Parameters
-    serverArgs.add_argument('serverPort', type=int, action='store', help='listening port')
-    serverArgs.add_argument('serverHost', type=str, action='store', nargs='*', help='listening host')
+    serverArgs.add_argument('serverHost',  type=str, action='store', help='listening host')
+    serverArgs.add_argument('serverPorts', type=int, action='store', help='listening port', nargs='+')
 
     # Parse arguments from command line
     args = parser.parse_args()
@@ -154,20 +175,20 @@ def main():
             print(addr)
     elif args.cmd == 'client': # Client
         clients = []
-        if args.clientHost:
-            clients.extend(create_clients_with_host(args.clientHost, args.timeout))
+        if args.srcHost:
+            clients.extend(create_client_with_host(args.srcHost, args.srcPort, args.timeout))
         if args.nic:
             clients.extend(create_client_with_nic(args.nic, args.numClients, args.timeout))
         if not clients:
             print("No client")
             return
-        run_clients(clients, (args.destHost, args.destPort), args.numPackets)
+        run_clients(clients, args.destHost, args.destPorts, args.numPackets)
     elif args.cmd == 'server': # Server
         servers = []
         if args.serverHost:
-            servers.extend(create_server_with_host(args.serverHost, args.serverPort, args.timeout))
+            servers.extend(create_server_with_host(args.serverHost, args.serverPorts, args.timeout))
         if args.nic:
-            servers.extend(create_server_with_nic(args.nic, args.serverPort, args.timeout))
+            servers.extend(create_server_with_nic(args.nic, args.serverPorts, args.timeout))
         if not servers:
             print("No server")
             return
