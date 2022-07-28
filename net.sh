@@ -70,6 +70,46 @@ let cnt=cnt+1
 done
 }
 
+_client() {
+   local src_ip=$1
+   local src_port=$2
+   local dest_ip=$3
+   local dest_port=$4
+
+   if [ -z "$src_ip" -o -z "$src_port" -o -z "$dest_ip" -o -z "$dest_port" ];then
+      echo "Usage:"
+      echo "   client <src ip> <src port> <dest ip> <dest port> [tcp|udp]"
+      exit 1
+   fi
+   case $5 in
+      tcp)
+         nc  -s $src_ip -p $src_port $dest_ip $dest_port
+      ;;
+      udp|*)
+         nc  -u -s $src_ip -p $src_port $dest_ip $dest_port
+      ;;
+   esac
+}
+
+_server() {
+   local dest_ip=$1
+   local dest_port=$2
+
+   if [ -z "$dest_ip" -o -z "$dest_port" ];then
+      echo "Usage:"
+      echo "   server <listen ip> <listen port> [tcp|udp]"
+      exit 1
+   fi
+   case "$3" in
+      tcp)
+         nc  -l $dest_ip $dest_port
+      ;;
+      udp|*)
+         nc  -u -l $dest_ip $dest_port
+      ;;
+   esac
+}
+
 CMDS=$(declare -F | awk '{print $3}')
 CMD=""
 STOP=""
